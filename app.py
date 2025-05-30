@@ -274,14 +274,12 @@ input_text = st.text_area(
     key="news_input"
 )
 
-# Analyze button
 if st.button("🔍 Analyze Content"):
     if input_text.strip() == "":
         st.warning("⚠️ Please enter some content to analyze.")
     elif model is None or vectorizer is None:
         st.error("⚠️ Models are not loaded properly. Please refresh the page and try again.")
     else:
-        # Show loading
         with st.spinner('📊 Analyzing content...'):
             time.sleep(1)
             result = predict_news(input_text)
@@ -289,7 +287,6 @@ if st.button("🔍 Analyze Content"):
         if result[0] is not None:
             prediction, fake_prob, real_prob = result
             
-            # Display results
             if prediction == 0:  # Fake
                 st.markdown(f"""
                     <div class="result-box result-fake">
@@ -297,14 +294,11 @@ if st.button("🔍 Analyze Content"):
                         <p>This content shows characteristics of misleading information.</p>
                     </div>
                 """, unsafe_allow_html=True)
-                
-                # Probability display using Streamlit components
                 st.markdown("**Confidence Levels:**")
                 st.write(f"🚨 Fake: **{fake_prob:.1f}%**")
                 st.progress(fake_prob/100)
                 st.write(f"✅ Authentic: **{real_prob:.1f}%**")
                 st.progress(real_prob/100)
-                
             else:  # Real
                 st.markdown(f"""
                     <div class="result-box result-real">
@@ -312,13 +306,32 @@ if st.button("🔍 Analyze Content"):
                         <p>This content appears to follow patterns of legitimate news.</p>
                     </div>
                 """, unsafe_allow_html=True)
-                
-                # Probability display using Streamlit components
                 st.markdown("**Confidence Levels:**")
                 st.write(f"✅ Authentic: **{real_prob:.1f}%**")
                 st.progress(real_prob/100)
                 st.write(f"🚨 Fake: **{fake_prob:.1f}%**")
                 st.progress(fake_prob/100)
+
+            # 💬 Human Feedback and Online Learning Section
+            st.markdown("### Was the prediction incorrect?")
+            feedback = st.radio(
+                "Let us know the correct label:",
+                options=["No Feedback", "It was Real", "It was Fake"],
+                index=0,
+                horizontal=True
+            )
+
+            if feedback != "No Feedback":
+                corrected_label = 1 if feedback == "It was Real" else 0
+                clean_text = preprocess_text(input_text)
+                vector = vectorizer.transform([clean_text])
+                try:
+                    model.partial_fit(vector, [corrected_label], classes=[0, 1])
+                    joblib.dump(model, "fake_news_model.pkl")
+                    st.success("✅ Thank you! The model has been updated with your feedback.")
+                except Exception as e:
+                    st.error(f"⚠️ Failed to apply feedback: {e}")
+
 
 # Footer note
 st.markdown("""

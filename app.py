@@ -6,6 +6,13 @@ from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 import time
 
+# Page configuration - MUST BE FIRST
+st.set_page_config(
+    page_title="News Verifier",
+    page_icon="📰",
+    layout="centered"
+)
+
 # Download NLTK data with comprehensive error handling
 @st.cache_resource
 def download_nltk_data():
@@ -33,12 +40,28 @@ def download_nltk_data():
 download_nltk_data()
 
 # Load the model and vectorizer
-model = joblib.load("fake_news_model.pkl")
-vectorizer = joblib.load("tfidf_vectorizer.pkl")
+@st.cache_resource
+def load_models():
+    """Load ML models with caching"""
+    try:
+        model = joblib.load("fake_news_model.pkl")
+        vectorizer = joblib.load("tfidf_vectorizer.pkl")
+        return model, vectorizer
+    except Exception as e:
+        st.error(f"Failed to load models: {e}")
+        return None, None
 
-# Preprocessing
-lemmatizer = WordNetLemmatizer()
-stop_words = set(stopwords.words("english"))
+model, vectorizer = load_models()
+
+# Preprocessing setup
+@st.cache_resource
+def setup_preprocessing():
+    """Setup preprocessing tools with caching"""
+    lemmatizer = WordNetLemmatizer()
+    stop_words = set(stopwords.words("english"))
+    return lemmatizer, stop_words
+
+lemmatizer, stop_words = setup_preprocessing()
 
 def preprocess_text(text):
     text = text.lower()
@@ -51,6 +74,10 @@ def preprocess_text(text):
 
 # Prediction function with probabilities
 def predict_news(text):
+    if model is None or vectorizer is None:
+        st.error("Models not loaded properly. Please refresh the page.")
+        return None, None, None
+        
     clean_text = preprocess_text(text)
     vector = vectorizer.transform([clean_text])
     prediction = model.predict(vector)[0]
@@ -61,13 +88,6 @@ def predict_news(text):
     real_prob = probabilities[1] * 100
     
     return prediction, fake_prob, real_prob
-
-# Page configuration
-st.set_page_config(
-    page_title="News Verifier",
-    page_icon="📰",
-    layout="centered"
-)
 
 # CSS with improved input label styling
 st.markdown("""
@@ -258,42 +278,47 @@ input_text = st.text_area(
 if st.button("🔍 Analyze Content"):
     if input_text.strip() == "":
         st.warning("⚠️ Please enter some content to analyze.")
+    elif model is None or vectorizer is None:
+        st.error("⚠️ Models are not loaded properly. Please refresh the page and try again.")
     else:
         # Show loading
         with st.spinner('📊 Analyzing content...'):
             time.sleep(1)
-            prediction, fake_prob, real_prob = predict_news(input_text)
-        
-        # Display results
-        if prediction == 0:  # Fake
-            st.markdown(f"""
-                <div class="result-box result-fake">
-                    <div class="result-title">🚨 LIKELY FAKE NEWS</div>
-                    <p>This content shows characteristics of misleading information.</p>
-                </div>
-            """, unsafe_allow_html=True)
+            result = predict_news(input_text)
             
-            # Probability display using Streamlit components
-            st.markdown("**Confidence Levels:**")
-            st.write(f"🚨 Fake: **{fake_prob:.1f}%**")
-            st.progress(fake_prob/100)
-            st.write(f"✅ Authentic: **{real_prob:.1f}%**")
-            st.progress(real_prob/100)
+        if result[0] is not None:
+            prediction, fake_prob, real_prob = result
             
-        else:  # Real
-            st.markdown(f"""
-                <div class="result-box result-real">
-                    <div class="result-title">✅ LIKELY AUTHENTIC</div>
-                    <p>This content appears to follow patterns of legitimate news.</p>
-                </div>
-            """, unsafe_allow_html=True)
-            
-            # Probability display using Streamlit components
-            st.markdown("**Confidence Levels:**")
-            st.write(f"✅ Authentic: **{real_prob:.1f}%**")
-            st.progress(real_prob/100)
-            st.write(f"🚨 Fake: **{fake_prob:.1f}%**")
-            st.progress(fake_prob/100)
+            # Display results
+            if prediction == 0:  # Fake
+                st.markdown(f"""
+                    <div class="result-box result-fake">
+                        <div class="result-title">🚨 LIKELY FAKE NEWS</div>
+                        <p>This content shows characteristics of misleading information.</p>
+                    </div>
+                """, unsafe_allow_html=True)
+                
+                # Probability display using Streamlit components
+                st.markdown("**Confidence Levels:**")
+                st.write(f"🚨 Fake: **{fake_prob:.1f}%**")
+                st.progress(fake_prob/100)
+                st.write(f"✅ Authentic: **{real_prob:.1f}%**")
+                st.progress(real_prob/100)
+                
+            else:  # Real
+                st.markdown(f"""
+                    <div class="result-box result-real">
+                        <div class="result-title">✅ LIKELY AUTHENTIC</div>
+                        <p>This content appears to follow patterns of legitimate news.</p>
+                    </div>
+                """, unsafe_allow_html=True)
+                
+                # Probability display using Streamlit components
+                st.markdown("**Confidence Levels:**")
+                st.write(f"✅ Authentic: **{real_prob:.1f}%**")
+                st.progress(real_prob/100)
+                st.write(f"🚨 Fake: **{fake_prob:.1f}%**")
+                st.progress(fake_prob/100)
 
 # Footer note
 st.markdown("""

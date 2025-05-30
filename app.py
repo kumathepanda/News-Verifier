@@ -5,21 +5,32 @@ import re
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 import time
-import os
-# Download NLTK data
 
-
-nltk_data_path = os.path.join(os.getcwd(), "nltk_data")
-if not os.path.exists(nltk_data_path):
-    os.mkdir(nltk_data_path)
-
-nltk.data.path.append(nltk_data_path)
-
-for resource in ['punkt', 'stopwords', 'wordnet']:
+# Download NLTK data with comprehensive error handling
+@st.cache_resource
+def download_nltk_data():
+    """Download required NLTK data with caching"""
     try:
-        nltk.data.find(f"tokenizers/{resource}" if resource == 'punkt' else f"corpora/{resource}")
+        # Try to find existing data first
+        nltk.data.find('tokenizers/punkt')
+        nltk.data.find('corpora/stopwords')
+        nltk.data.find('corpora/wordnet')
+        return True
     except LookupError:
-        nltk.download(resource, download_dir=nltk_data_path)
+        try:
+            # Download required data
+            nltk.download('punkt', quiet=True)
+            nltk.download('stopwords', quiet=True)
+            nltk.download('wordnet', quiet=True)
+            # Try alternative punkt tokenizer for newer NLTK versions
+            nltk.download('punkt_tab', quiet=True)
+            return True
+        except Exception as e:
+            st.error(f"Failed to download NLTK data: {e}")
+            return False
+
+# Initialize NLTK data
+download_nltk_data()
 
 # Load the model and vectorizer
 model = joblib.load("fake_news_model.pkl")
@@ -58,24 +69,20 @@ st.set_page_config(
     layout="centered"
 )
 
-# Simple CSS with peach/newspaper theme
+# CSS with improved input label styling
 st.markdown("""
     <style>
-        /* Import classic fonts */
         @import url('https://fonts.googleapis.com/css2?family=Crimson+Text:wght@400;600&family=Source+Serif+Pro:wght@400;600&display=swap');
         
-        /* Main styling */
         .stApp {
             background-color: #fdf6e3;
             color: #2c1810;
         }
         
-        /* Hide Streamlit elements */
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
         header {visibility: hidden;}
         
-        /* Header */
         .main-header {
             text-align: center;
             padding: 2rem 0;
@@ -100,24 +107,38 @@ st.markdown("""
             font-style: italic;
         }
         
-        /* Input area */
         .input-container {
             background-color: #faf0e6;
             padding: 1.5rem;
-            border-radius: 8px;
+            border-radius: 10px;
             border: 2px solid #deb887;
-            margin: 1rem 0;
+            margin: 1.5rem 0;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
         }
         
         .input-label {
             font-family: 'Crimson Text', serif;
-            font-size: 1.2rem;
+            font-size: 1.3rem;
             color: #8b4513;
             margin-bottom: 1rem;
             font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.8rem 0;
+            border-bottom: 2px solid #e6d3b7;
+            background: linear-gradient(135deg, #fff8e7 0%, #f5e6d3 100%);
+            border-radius: 8px;
+            padding-left: 1rem;
+            box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
         }
         
-        /* Button styling */
+        .input-label::before {
+            content: "📝";
+            font-size: 1.4rem;
+            margin-right: 0.3rem;
+        }
+        
         .stButton > button {
             background-color: #cd853f;
             color: white;
@@ -136,7 +157,6 @@ st.markdown("""
             background-color: #a0522d;
         }
         
-        /* Results */
         .result-box {
             padding: 1.5rem;
             border-radius: 8px;
@@ -163,48 +183,16 @@ st.markdown("""
             margin-bottom: 0.5rem;
         }
         
-        .probability-section {
-            margin-top: 1rem;
-            padding-top: 1rem;
-            border-top: 1px solid rgba(0,0,0,0.1);
-        }
-        
-        .prob-bar {
-            background-color: #e0e0e0;
-            border-radius: 10px;
-            height: 20px;
-            margin: 0.5rem 0;
-            overflow: hidden;
-        }
-        
-        .prob-fill-real {
-            background-color: #228b22;
-            height: 100%;
-            border-radius: 10px;
-            transition: width 0.5s ease;
-        }
-        
-        .prob-fill-fake {
-            background-color: #cd5c5c;
-            height: 100%;
-            border-radius: 10px;
-            transition: width 0.5s ease;
-        }
-        
-        .prob-text {
-            font-size: 0.9rem;
-            margin: 0.2rem 0;
-        }
-        
-        /* Text area */
         .stTextArea textarea {
             font-family: 'Source Serif Pro', serif;
-            border: 1px solid #deb887;
-            border-radius: 5px;
+            border: 2px solid #deb887;
+            border-radius: 8px;
             background-color: #fffef7;
             color: #2c1810 !important;
             font-size: 14px;
             cursor: text;
+            padding: 0.8rem;
+            transition: border-color 0.3s, box-shadow 0.3s;
         }
         
         .stTextArea textarea::placeholder {
@@ -215,7 +203,7 @@ st.markdown("""
         .stTextArea textarea:focus {
             border-color: #cd853f;
             outline: none;
-            box-shadow: 0 0 5px rgba(205, 133, 63, 0.3);
+            box-shadow: 0 0 8px rgba(205, 133, 63, 0.4);
             cursor: text;
         }
         
@@ -223,14 +211,12 @@ st.markdown("""
             opacity: 0.3;
         }
         
-        /* Warning */
         .stWarning {
             background-color: #fff3cd;
             border: 1px solid #ffeaa7;
             border-radius: 5px;
         }
         
-        /* Footer */
         .footer-note {
             margin-top: 2rem;
             padding: 1rem;
@@ -256,7 +242,7 @@ st.markdown("""
 # Input section
 st.markdown("""
     <div class="input-container">
-        <div class="input-label">📝 Enter news content to verify:</div>
+        <div class="input-label">Enter news content to verify</div>
     </div>
 """, unsafe_allow_html=True)
 

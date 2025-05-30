@@ -5,11 +5,21 @@ import re
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 import time
-
+import os
 # Download NLTK data
-nltk.download('punkt')
-nltk.download('stopwords')
-nltk.download('wordnet')
+
+
+nltk_data_path = os.path.join(os.getcwd(), "nltk_data")
+if not os.path.exists(nltk_data_path):
+    os.mkdir(nltk_data_path)
+
+nltk.data.path.append(nltk_data_path)
+
+for resource in ['punkt', 'stopwords', 'wordnet']:
+    try:
+        nltk.data.find(f"tokenizers/{resource}" if resource == 'punkt' else f"corpora/{resource}")
+    except LookupError:
+        nltk.download(resource, download_dir=nltk_data_path)
 
 # Load the model and vectorizer
 model = joblib.load("fake_news_model.pkl")

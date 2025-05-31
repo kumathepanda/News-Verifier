@@ -1,1 +1,3 @@
 service_account.json
+.streamlit/secrets.toml
+*.json

@@ -8,6 +8,9 @@ import time
 import pandas as pd
 import os
 from datetime import datetime
+import json
+import gspread
+from google.oauth2.service_account import Credentials
 
 # Page configuration - MUST BE FIRST
 st.set_page_config(
@@ -15,6 +18,14 @@ st.set_page_config(
     page_icon="📰",
     layout="centered"
 )
+
+# GOOGLE SHEETS CONFIGURATION
+
+GOOGLE_SHEETS_URL = "https://docs.google.com/spreadsheets/d/16B6LHV0CakAfH2JOgxFv8F0Dv86_sMfCII5wGWvPYnk/edit?usp=sharing"  
+SHEET_NAME = "feedback_data"  
+
+
+CREDENTIALS_FILE = "service_account.json"  # Replace with your JSON file name
 
 # Initialize session state variables
 if 'feedback_submitted' not in st.session_state:
@@ -104,61 +115,210 @@ def predict_news(text):
     
     return prediction, fake_prob, real_prob
 
-def save_feedback_to_csv(preprocessed_text, corrected_label):
-    """Save feedback data to CSV file for partial training"""
+@st.cache_resource
+def setup_google_sheets():
+    """Setup Google Sheets client with caching using Streamlit secrets"""
     try:
-        # Define the CSV filename
-        csv_filename = "feedback_csv.csv"
+        # Define the scope
+        scope = [
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive'
+        ]
         
-        # Create feedback record with only essential data for training
-        feedback_record = {
-            'clean_text': preprocessed_text,
-            'label': int(corrected_label)
-        }
+        # Try to load credentials from Streamlit secrets
+        try:
+            # Access the service account info from Streamlit secrets
+            service_account_info = dict(st.secrets["service_account"])
+            creds = Credentials.from_service_account_info(service_account_info, scopes=scope)
+        except KeyError:
+            # Fallback: Try to load from file if secrets not available
+            if os.path.exists(CREDENTIALS_FILE):
+                creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scope)
+            else:
+                return None, "Service account credentials not found in Streamlit secrets or local file. Please configure your secrets.toml file."
+        except Exception as e:
+            return None, f"Error loading credentials from Streamlit secrets: {str(e)}"
         
-        # Check if CSV exists and is not empty
-        if os.path.exists(csv_filename):
-            try:
-                # Try to read existing CSV
-                df = pd.read_csv(csv_filename)
-                # Check if dataframe is empty or has no columns
-                if df.empty or len(df.columns) == 0:
-                    # File exists but is empty/corrupted, create new dataframe
-                    df = pd.DataFrame([feedback_record])
-                else:
-                    # Append to existing data
-                    df = pd.concat([df, pd.DataFrame([feedback_record])], ignore_index=True)
-            except (pd.errors.EmptyDataError, pd.errors.ParserError):
-                # File exists but is corrupted/empty, create new dataframe
-                df = pd.DataFrame([feedback_record])
-        else:
-            # Create new dataframe
-            df = pd.DataFrame([feedback_record])
-        
-        # Save to CSV
-        df.to_csv(csv_filename, index=False)
-        return True
+        # Authorize and create client
+        client = gspread.authorize(creds)
+        return client, "success"
         
     except Exception as e:
-        st.error(f"Failed to save feedback: {e}")
-        return False
+        return None, f"Failed to setup Google Sheets: {str(e)}"
+
+def extract_sheet_id_from_url(url):
+    """Extract Google Sheets ID from URL"""
+    try:
+        if '/spreadsheets/d/' in url:
+            return url.split('/spreadsheets/d/')[1].split('/')[0]
+        else:
+            return url  # Assume it's already an ID
+    except Exception:
+        return None
+
+@st.cache_data(ttl=60)  # Cache for 1 minute to avoid frequent API calls
+def load_google_sheets_data():
+    """Load data from Google Sheets with caching"""
+    # Check if Google Sheets URL is configured in secrets or hardcoded
+    try:
+        # Try to get URL from secrets first, then fallback to hardcoded
+        sheets_url = st.secrets.get("GOOGLE_SHEETS_URL", GOOGLE_SHEETS_URL)
+        sheet_name = st.secrets.get("SHEET_NAME", SHEET_NAME)
+    except Exception:
+        # Fallback to hardcoded values if secrets not available
+        sheets_url = GOOGLE_SHEETS_URL
+        sheet_name = SHEET_NAME
+    
+    if not sheets_url or sheets_url == "YOUR_GOOGLE_SHEETS_URL_HERE":
+        return pd.DataFrame(), "Google Sheets URL not configured in secrets or code"
+    
+    try:
+        client, setup_status = setup_google_sheets()
+        if setup_status != "success":
+            return pd.DataFrame(), setup_status
+        
+        # Extract sheet ID from URL
+        sheet_id = extract_sheet_id_from_url(sheets_url)
+        if not sheet_id:
+            return pd.DataFrame(), "Invalid Google Sheets URL"
+        
+        # Open the spreadsheet
+        spreadsheet = client.open_by_key(sheet_id)
+        
+        # Try to open the specific worksheet
+        try:
+            worksheet = spreadsheet.worksheet(sheet_name)
+        except gspread.WorksheetNotFound:
+            # Create the worksheet if it doesn't exist
+            worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=10)
+            # Add headers
+            headers = ['clean_text', 'label', 'timestamp', 'session_id']
+            worksheet.insert_row(headers, 1)
+        
+        # Get all records
+        records = worksheet.get_all_records()
+        df = pd.DataFrame(records)
+        
+        return df, "success"
+        
+    except gspread.exceptions.APIError as e:
+        return pd.DataFrame(), f"Google Sheets API error: {str(e)}"
+    except Exception as e:
+        return pd.DataFrame(), f"Error loading Google Sheets data: {str(e)}"
+
+def save_feedback_to_google_sheets(preprocessed_text, corrected_label):
+    """Save feedback data to Google Sheets and local session"""
+    try:
+        # Create feedback record
+        feedback_record = {
+            'clean_text': preprocessed_text,
+            'label': int(corrected_label),
+            'timestamp': datetime.now().isoformat(),
+            'session_id': st.session_state.get('session_id', 'unknown')
+        }
+        
+        # Save to session state (immediate backup)
+        if 'feedback_data' not in st.session_state:
+            st.session_state.feedback_data = []
+        st.session_state.feedback_data.append(feedback_record)
+        
+        # Try to save to Google Sheets
+        try:
+            client, setup_status = setup_google_sheets()
+            if setup_status != "success":
+                # Fallback to local save
+                df = pd.DataFrame(st.session_state.feedback_data)
+                df.to_csv("feedback_data_backup.csv", index=False)
+                return True, f"Google Sheets not available ({setup_status}). Saved locally. Records: {len(df)}"
+            
+            # Get URLs from secrets or fallback to hardcoded
+            try:
+                sheets_url = st.secrets.get("GOOGLE_SHEETS_URL", GOOGLE_SHEETS_URL)
+                sheet_name = st.secrets.get("SHEET_NAME", SHEET_NAME)
+            except Exception:
+                sheets_url = GOOGLE_SHEETS_URL
+                sheet_name = SHEET_NAME
+            
+            # Extract sheet ID from URL
+            sheet_id = extract_sheet_id_from_url(sheets_url)
+            if not sheet_id:
+                return False, "Invalid Google Sheets URL"
+            
+            # Open the spreadsheet and worksheet
+            spreadsheet = client.open_by_key(sheet_id)
+            
+            try:
+                worksheet = spreadsheet.worksheet(sheet_name)
+            except gspread.WorksheetNotFound:
+                # Create the worksheet if it doesn't exist
+                worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=10)
+                # Add headers
+                headers = ['clean_text', 'label', 'timestamp', 'session_id']
+                worksheet.insert_row(headers, 1)
+            
+            # Append the new record
+            row_data = [
+                feedback_record['clean_text'],
+                feedback_record['label'],
+                feedback_record['timestamp'],
+                feedback_record['session_id']
+            ]
+            worksheet.append_row(row_data)
+            
+            # Get total count
+            total_records = len(worksheet.get_all_records())
+            
+            return True, f"Feedback saved to Google Sheets! Total records: {total_records}"
+                
+        except Exception as sheets_error:
+            # Fallback to local CSV
+            try:
+                df = pd.DataFrame(st.session_state.feedback_data)
+                df.to_csv("feedback_data_backup.csv", index=False)
+                return True, f"Google Sheets error, saved locally: {sheets_error}. Records: {len(df)}"
+            except Exception as csv_error:
+                return False, f"Failed to save feedback: {csv_error}"
+        
+    except Exception as e:
+        return False, f"Failed to save feedback: {e}"
 
 def load_feedback_stats():
-    """Load and display feedback statistics"""
+    """Load and display feedback statistics from Google Sheets and session"""
+    stats = {
+        'sheets_feedback': 0,
+        'session_feedback': 0,
+        'total_feedback': 0,
+        'sheets_status': 'Not configured'
+    }
+    
+    # Get session feedback count
+    stats['session_feedback'] = len(st.session_state.get('feedback_data', []))
+    
+    # Try to get Google Sheets feedback count
     try:
-        if os.path.exists("feedback_csv.csv"):
-            try:
-                df = pd.read_csv("feedback_csv.csv")
-                if not df.empty and len(df.columns) > 0:
-                    return {
-                        'total_feedback': len(df)
-                    }
-            except (pd.errors.EmptyDataError, pd.errors.ParserError):
-                # File exists but is empty/corrupted
-                return None
+        sheets_url = st.secrets.get("GOOGLE_SHEETS_URL", GOOGLE_SHEETS_URL)
     except Exception:
-        pass
-    return None
+        sheets_url = GOOGLE_SHEETS_URL
+    
+    if sheets_url and sheets_url != "YOUR_GOOGLE_SHEETS_URL_HERE":
+        try:
+            df, load_status = load_google_sheets_data()
+            if load_status == "success" and not df.empty:
+                stats['sheets_feedback'] = len(df)
+                stats['sheets_status'] = 'Connected'
+            else:
+                stats['sheets_status'] = f'Error: {load_status}'
+        except Exception as e:
+            stats['sheets_status'] = f'Error: {str(e)}'
+    
+    # Calculate total (avoid double counting)
+    stats['total_feedback'] = max(stats['sheets_feedback'], stats['session_feedback'])
+    
+    return stats
+
+# Generate unique session ID
+if 'session_id' not in st.session_state:
+    st.session_state.session_id = f"session_{int(time.time())}"
 
 # CSS with improved input label styling and coffee-colored radio buttons
 st.markdown("""
@@ -396,6 +556,26 @@ st.markdown("""
             color: #2d5a2d;
         }
         
+        .sheets-status-connected {
+            background-color: #d4edda;
+            color: #155724;
+            padding: 0.5rem 1rem;
+            border-radius: 5px;
+            font-weight: 600;
+            display: inline-block;
+            margin: 0.5rem 0;
+        }
+        
+        .sheets-status-error {
+            background-color: #f8d7da;
+            color: #721c24;
+            padding: 0.5rem 1rem;
+            border-radius: 5px;
+            font-weight: 600;
+            display: inline-block;
+            margin: 0.5rem 0;
+        }
+        
         .footer-note {
             margin-top: 2rem;
             padding: 1rem;
@@ -446,13 +626,22 @@ st.markdown("""
 # Display feedback statistics if available
 stats = load_feedback_stats()
 if stats:
+    sheets_status_class = "sheets-status-connected" if stats['sheets_status'] == 'Connected' else "sheets-status-error"
+    
     st.markdown(f"""
         <div class="stats-container">
             <strong>📊 Community Feedback Stats:</strong><br>
             • Total Feedback Received: {stats['total_feedback']}<br>
+            • Google Sheets Records: {stats['sheets_feedback']}<br>
+            • Your Session Feedback: {stats['session_feedback']}<br>
+            • Google Sheets Status: <span class="{sheets_status_class}">{stats['sheets_status']}</span><br>
             • Your feedback helps improve our model for everyone!
         </div>
     """, unsafe_allow_html=True)
+
+# Configuration warning if Google Sheets not set up
+if GOOGLE_SHEETS_URL == "YOUR_GOOGLE_SHEETS_URL_HERE":
+    st.warning("⚠️ Google Sheets integration not configured. Please set your Google Sheets URL and credentials.")
 
 # Input section
 st.markdown("""
@@ -554,8 +743,8 @@ if st.session_state.analysis_done and st.session_state.current_prediction:
                 corrected_label = 1 if feedback == "It was Real News" else 0
                 clean_text = preprocess_text(st.session_state.current_text)
                 
-                # Save feedback to CSV
-                success = save_feedback_to_csv(
+                # Save feedback to Google Sheets and session
+                success, message = save_feedback_to_google_sheets(
                     preprocessed_text=clean_text,
                     corrected_label=corrected_label
                 )
@@ -564,9 +753,11 @@ if st.session_state.analysis_done and st.session_state.current_prediction:
                     # Set session state to show success message
                     st.session_state.feedback_submitted = True
                     st.session_state.show_success = True
+                    # Clear cache to refresh stats
+                    st.cache_data.clear()
                     st.rerun()
                 else:
-                    st.error("⚠️ Failed to save feedback. Please try again.")
+                    st.error(f"⚠️ {message}")
             
             # Show instruction text when feedback is selected but not yet submitted
             else:
@@ -580,9 +771,12 @@ if st.session_state.analysis_done and st.session_state.current_prediction:
                 st.session_state.show_success = False
                 st.rerun()
 
-# Footer note
-st.markdown("""
+# Footer note with Google Sheets integration information
+st.markdown(f"""
     <div class="footer-note">
-        <strong>📌 Important:</strong> This tool provides AI-based guidance and records user feedback for future model improvements. Feedback data is stored locally and used to retrain the model periodically. Always verify important information through multiple trusted sources before making decisions.
+        <strong>📌 Important:</strong> This tool provides AI-based guidance and records user feedback for model improvements. 
+        <br><br>
+        <strong>📊 Google Sheets Integration:</strong> 
+        {'✅ Connected - Feedback is being saved to your Google Sheets.' if stats and stats.get('sheets_status') == 'Connected' else '⚠️ Not Connected - Feedback is being stored locally only.'}
     </div>
 """, unsafe_allow_html=True)

@@ -2,3 +2,8 @@ streamlit
 scikit-learn
 nltk
 joblib
+requests
+pandas
+numpy
+gspread
+google-auth

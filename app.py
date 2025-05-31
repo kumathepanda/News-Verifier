@@ -20,12 +20,8 @@ st.set_page_config(
 )
 
 # GOOGLE SHEETS CONFIGURATION
-
 GOOGLE_SHEETS_URL = "https://docs.google.com/spreadsheets/d/16B6LHV0CakAfH2JOgxFv8F0Dv86_sMfCII5wGWvPYnk/edit?usp=sharing"  
 SHEET_NAME = "feedback_data"  
-
-
-CREDENTIALS_FILE = "service_account.json"  # Replace with your JSON file name
 
 # Initialize session state variables
 if 'feedback_submitted' not in st.session_state:
@@ -117,7 +113,7 @@ def predict_news(text):
 
 @st.cache_resource
 def setup_google_sheets():
-    """Setup Google Sheets client with caching using Streamlit secrets"""
+    """Setup Google Sheets client with caching - Fixed for Streamlit secrets"""
     try:
         # Define the scope
         scope = [
@@ -125,19 +121,27 @@ def setup_google_sheets():
             'https://www.googleapis.com/auth/drive'
         ]
         
-        # Try to load credentials from Streamlit secrets
+        # Try to load credentials from Streamlit secrets first
         try:
-            # Access the service account info from Streamlit secrets
-            service_account_info = dict(st.secrets["service_account"])
-            creds = Credentials.from_service_account_info(service_account_info, scopes=scope)
-        except KeyError:
-            # Fallback: Try to load from file if secrets not available
-            if os.path.exists(CREDENTIALS_FILE):
-                creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=scope)
+            # Access the gcp_service_account from Streamlit secrets
+            credentials_dict = st.secrets["gcp_service_account"]
+            
+            # Convert the AttrDict to a regular dictionary
+            credentials_info = dict(credentials_dict)
+            
+            # Fix the private_key formatting (replace \\n with actual newlines)
+            if "private_key" in credentials_info:
+                credentials_info["private_key"] = credentials_info["private_key"].replace("\\n", "\n")
+            
+            # Create credentials from the dictionary
+            creds = Credentials.from_service_account_info(credentials_info, scopes=scope)
+            
+        except Exception as secrets_error:
+            # Fallback: Try to load from local file
+            if os.path.exists("service_account.json"):
+                creds = Credentials.from_service_account_file("service_account.json", scopes=scope)
             else:
-                return None, "Service account credentials not found in Streamlit secrets or local file. Please configure your secrets.toml file."
-        except Exception as e:
-            return None, f"Error loading credentials from Streamlit secrets: {str(e)}"
+                return None, f"Credentials not found. Secrets error: {str(secrets_error)}"
         
         # Authorize and create client
         client = gspread.authorize(creds)
@@ -159,18 +163,8 @@ def extract_sheet_id_from_url(url):
 @st.cache_data(ttl=60)  # Cache for 1 minute to avoid frequent API calls
 def load_google_sheets_data():
     """Load data from Google Sheets with caching"""
-    # Check if Google Sheets URL is configured in secrets or hardcoded
-    try:
-        # Try to get URL from secrets first, then fallback to hardcoded
-        sheets_url = st.secrets.get("GOOGLE_SHEETS_URL", GOOGLE_SHEETS_URL)
-        sheet_name = st.secrets.get("SHEET_NAME", SHEET_NAME)
-    except Exception:
-        # Fallback to hardcoded values if secrets not available
-        sheets_url = GOOGLE_SHEETS_URL
-        sheet_name = SHEET_NAME
-    
-    if not sheets_url or sheets_url == "YOUR_GOOGLE_SHEETS_URL_HERE":
-        return pd.DataFrame(), "Google Sheets URL not configured in secrets or code"
+    if not GOOGLE_SHEETS_URL or GOOGLE_SHEETS_URL == "YOUR_GOOGLE_SHEETS_URL_HERE":
+        return pd.DataFrame(), "Google Sheets URL not configured"
     
     try:
         client, setup_status = setup_google_sheets()
@@ -178,7 +172,7 @@ def load_google_sheets_data():
             return pd.DataFrame(), setup_status
         
         # Extract sheet ID from URL
-        sheet_id = extract_sheet_id_from_url(sheets_url)
+        sheet_id = extract_sheet_id_from_url(GOOGLE_SHEETS_URL)
         if not sheet_id:
             return pd.DataFrame(), "Invalid Google Sheets URL"
         
@@ -187,10 +181,10 @@ def load_google_sheets_data():
         
         # Try to open the specific worksheet
         try:
-            worksheet = spreadsheet.worksheet(sheet_name)
+            worksheet = spreadsheet.worksheet(SHEET_NAME)
         except gspread.WorksheetNotFound:
             # Create the worksheet if it doesn't exist
-            worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=10)
+            worksheet = spreadsheet.add_worksheet(title=SHEET_NAME, rows=1000, cols=10)
             # Add headers
             headers = ['clean_text', 'label', 'timestamp', 'session_id']
             worksheet.insert_row(headers, 1)
@@ -231,16 +225,8 @@ def save_feedback_to_google_sheets(preprocessed_text, corrected_label):
                 df.to_csv("feedback_data_backup.csv", index=False)
                 return True, f"Google Sheets not available ({setup_status}). Saved locally. Records: {len(df)}"
             
-            # Get URLs from secrets or fallback to hardcoded
-            try:
-                sheets_url = st.secrets.get("GOOGLE_SHEETS_URL", GOOGLE_SHEETS_URL)
-                sheet_name = st.secrets.get("SHEET_NAME", SHEET_NAME)
-            except Exception:
-                sheets_url = GOOGLE_SHEETS_URL
-                sheet_name = SHEET_NAME
-            
             # Extract sheet ID from URL
-            sheet_id = extract_sheet_id_from_url(sheets_url)
+            sheet_id = extract_sheet_id_from_url(GOOGLE_SHEETS_URL)
             if not sheet_id:
                 return False, "Invalid Google Sheets URL"
             
@@ -248,10 +234,10 @@ def save_feedback_to_google_sheets(preprocessed_text, corrected_label):
             spreadsheet = client.open_by_key(sheet_id)
             
             try:
-                worksheet = spreadsheet.worksheet(sheet_name)
+                worksheet = spreadsheet.worksheet(SHEET_NAME)
             except gspread.WorksheetNotFound:
                 # Create the worksheet if it doesn't exist
-                worksheet = spreadsheet.add_worksheet(title=sheet_name, rows=1000, cols=10)
+                worksheet = spreadsheet.add_worksheet(title=SHEET_NAME, rows=1000, cols=10)
                 # Add headers
                 headers = ['clean_text', 'label', 'timestamp', 'session_id']
                 worksheet.insert_row(headers, 1)
@@ -295,12 +281,7 @@ def load_feedback_stats():
     stats['session_feedback'] = len(st.session_state.get('feedback_data', []))
     
     # Try to get Google Sheets feedback count
-    try:
-        sheets_url = st.secrets.get("GOOGLE_SHEETS_URL", GOOGLE_SHEETS_URL)
-    except Exception:
-        sheets_url = GOOGLE_SHEETS_URL
-    
-    if sheets_url and sheets_url != "YOUR_GOOGLE_SHEETS_URL_HERE":
+    if GOOGLE_SHEETS_URL and GOOGLE_SHEETS_URL != "YOUR_GOOGLE_SHEETS_URL_HERE":
         try:
             df, load_status = load_google_sheets_data()
             if load_status == "success" and not df.empty:

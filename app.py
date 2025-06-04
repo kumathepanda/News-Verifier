@@ -297,6 +297,14 @@ def load_feedback_stats():
     
     return stats
 
+def show_fake_data():
+    fake_data = pd.read_csv("https://raw.githubusercontent.com/kumathepanda/News-Verifier/refs/heads/main/data/Fake.csv")
+    return fake_data["text"].sample(1).iloc[0]
+
+def show_True_data():
+    True_data = pd.read_csv("https://raw.githubusercontent.com/kumathepanda/News-Verifier/refs/heads/main/data/True.csv")
+    return True_data["text"].sample(1).iloc[0]
+ 
 # Generate unique session ID
 if 'session_id' not in st.session_state:
     st.session_state.session_id = f"session_{int(time.time())}"
@@ -639,6 +647,22 @@ input_text = st.text_area(
     key="news_input"
 )
 
+# Sample data buttons
+st.markdown("**Try with sample data:**")
+col1, col2, col3 = st.columns([1, 1, 2])
+
+with col1:
+    if st.button("📰 Copy True News Sample"):
+        sample_text = show_True_data()
+        st.text_area("Copy this sample text:", value=sample_text, height=100, key="true_sample_display")
+        st.info("👆 Select all text above and copy it (Ctrl+C), then paste into the main input area.")
+
+with col2:
+    if st.button("🚨 Copy Fake News Sample"):
+        sample_text = show_fake_data()
+        st.text_area("Copy this sample text:", value=sample_text, height=100, key="fake_sample_display")
+        st.info("👆 Select all text above and copy it (Ctrl+C), then paste into the main input area.")
+
 if st.button("🔍 Analyze Content"):
     if input_text.strip() == "":
         st.warning("⚠️ Please enter some content to analyze.")
@@ -661,7 +685,7 @@ if st.button("🔍 Analyze Content"):
 if st.session_state.analysis_done and st.session_state.current_prediction:
     prediction, fake_prob, real_prob = st.session_state.current_prediction
     
-    if prediction == 0:  # Fake
+    if prediction==0:  # Fake
         st.markdown(f"""
             <div class="result-box result-fake">
                 <div class="result-title">🚨 LIKELY FAKE NEWS</div>
